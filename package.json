@@ -1,0 +1,34 @@
+{
+  "name": "youtube-web-streamer",
+  "version": "1.0.0",
+  "description": "Cloud-deployable web page to YouTube Live streamer using Playwright and FFmpeg",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node index.js",
+    "install-browsers": "npx playwright install chromium"
+  },
+  "keywords": [
+    "youtube",
+    "streaming",
+    "playwright",
+    "web-automation",
+    "ffmpeg",
+    "live-stream",
+    "rtmp",
+    "cloud",
+    "docker"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.3.1",
+    "playwright": "^1.53.0",
+    "koa": "^2.14.2",
+    "koa-bodyparser": "^4.4.1",
+    "koa-json": "^2.0.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

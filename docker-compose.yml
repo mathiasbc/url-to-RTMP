@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  youtube-streamer:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - HEADLESS=true
+    env_file:
+      - .env
+    restart: unless-stopped
+    # For development, you can override with:
+    # volumes:
+    #   - ./:/app
+    #   - /app/node_modules 
