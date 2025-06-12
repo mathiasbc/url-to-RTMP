@@ -2,8 +2,6 @@
 
 Stream any web page to YouTube Live, Twitch, or any other RTMP-compatible service. This project uses Playwright to capture a target web page in a headless browser and streams it 24/7 using FFmpeg. It's designed for reliable, long-running cloud deployment in a Docker container.
 
-![Diagram](https://i.imgur.com/example.png) <!-- Placeholder: A diagram showing Web Page -> Playwright -> FFmpeg -> RTMP -->
-
 ## ✨ Features
 
 - **🔴 Live Stream Any Web Page:** Capture and stream dynamic web content.
