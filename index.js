@@ -24,8 +24,8 @@ class WebToYouTubeStreamer {
       bitrate: process.env.STREAM_BITRATE || '7000k',
       port: process.env.PORT || 3000,
       headless: process.env.HEADLESS !== 'false', // Allow override for debugging
-      // New optimization: Screenshot interval in seconds (default: 10 seconds for slow-changing content)
-      screenshotInterval: parseInt(process.env.SCREENSHOT_INTERVAL) || 10
+      // New optimization: Screenshot interval in seconds (supports decimal values like 0.5)
+      screenshotInterval: parseFloat(process.env.SCREENSHOT_INTERVAL) || 1.0
     };
 
     console.log('Web Streamer initialized with config:', {
@@ -92,11 +92,15 @@ class WebToYouTubeStreamer {
     const rtmpUrl = `${this.config.youtubeRtmpUrl.replace(/\/$/, '')}/${this.config.youtubeStreamKey}`;
     console.log('Streaming to:', rtmpUrl.replace(this.config.youtubeStreamKey, '[STREAM_KEY_HIDDEN]'));
     
+    // Calculate input framerate based on screenshot interval
+    const inputFramerate = (1 / this.config.screenshotInterval).toFixed(3);
+    console.log(`FFmpeg input framerate: ${inputFramerate} fps (1 frame every ${this.config.screenshotInterval}s)`);
+    
     const ffmpegArgs = [
       '-f', 'image2pipe',
       '-vcodec', 'png',
-      // Use a very low input framerate since we're feeding images slowly
-      '-r', '0.1', // 0.1 fps input (1 frame every 10 seconds)
+      // Use dynamic input framerate based on screenshot interval
+      '-r', inputFramerate,
       '-i', '-',
       // Audio (required for YouTube Live) - Fixed syntax
       '-f', 'lavfi',
