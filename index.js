@@ -23,7 +23,9 @@ class WebToYouTubeStreamer {
       fps: parseInt(process.env.STREAM_FPS) || 30,
       bitrate: process.env.STREAM_BITRATE || '7000k',
       port: process.env.PORT || 3000,
-      headless: process.env.HEADLESS !== 'false' // Allow override for debugging
+      headless: process.env.HEADLESS !== 'false', // Allow override for debugging
+      // New optimization: Screenshot interval in seconds (default: 10 seconds for slow-changing content)
+      screenshotInterval: parseInt(process.env.SCREENSHOT_INTERVAL) || 10
     };
 
     console.log('Web Streamer initialized with config:', {
@@ -93,30 +95,35 @@ class WebToYouTubeStreamer {
     const ffmpegArgs = [
       '-f', 'image2pipe',
       '-vcodec', 'png',
-      '-r', this.config.fps.toString(),
+      // Use a very low input framerate since we're feeding images slowly
+      '-r', '0.1', // 0.1 fps input (1 frame every 10 seconds)
       '-i', '-',
       // Audio (required for YouTube Live) - Fixed syntax
       '-f', 'lavfi',
       '-i', 'anullsrc=r=44100:cl=stereo',
-      // Video encoding optimized for YouTube Live with higher bitrate
+      // Video encoding optimized for YouTube Live with frame duplication
       '-vcodec', 'libx264',
-      '-preset', 'fast', // Changed from veryfast to fast for better quality
+      '-preset', 'fast',
       '-tune', 'zerolatency',
       '-pix_fmt', 'yuv420p',
-      '-profile:v', 'high', // Changed from baseline to high for better compression
-      '-level', '4.0', // Increased level for higher bitrates
+      '-profile:v', 'high',
+      '-level', '4.0',
+      // Output framerate - FFmpeg will duplicate frames to reach this
+      '-r', this.config.fps.toString(),
       '-g', (this.config.fps * 2).toString(),
       '-keyint_min', this.config.fps.toString(),
       '-b:v', this.config.bitrate,
       '-maxrate', this.config.bitrate,
       '-bufsize', (parseInt(this.config.bitrate) * 2) + 'k',
+      // Frame duplication filter to smooth out the low input framerate
+      '-vf', `fps=${this.config.fps}`,
       // Additional encoding optimizations
-      '-sc_threshold', '0', // Disable scene change detection for consistent keyframes
-      '-flags', '+cgop', // Closed GOP for better streaming
-      '-bf', '2', // B-frames for better compression
+      '-sc_threshold', '0',
+      '-flags', '+cgop',
+      '-bf', '2',
       // Audio encoding (enhanced)
       '-c:a', 'aac',
-      '-b:a', '160k', // Increased audio bitrate for better quality
+      '-b:a', '160k',
       '-ar', '44100',
       '-ac', '2',
       // Output format optimized for streaming
@@ -183,13 +190,17 @@ class WebToYouTubeStreamer {
       throw error;
     }
 
-    console.log('Page ready, starting web capture...');
+    console.log(`Page ready, starting optimized web capture (screenshot every ${this.config.screenshotInterval}s)...`);
     this.isStreaming = true;
 
-    // Capture screenshots in a loop and pipe to FFmpeg
+    // Optimized capture loop - takes screenshots much less frequently
     const captureLoop = async () => {
+      let screenshotCount = 0;
+      
       while (this.isStreaming && this.ffmpegProcess && !this.ffmpegProcess.killed) {
         try {
+          const startTime = Date.now();
+          
           const screenshot = await this.page.screenshot({
             type: 'png',
             fullPage: false
@@ -197,13 +208,18 @@ class WebToYouTubeStreamer {
 
           if (this.ffmpegProcess.stdin.writable) {
             this.ffmpegProcess.stdin.write(screenshot);
+            screenshotCount++;
+            
+            const captureTime = Date.now() - startTime;
+            console.log(`Screenshot ${screenshotCount} captured in ${captureTime}ms (next in ${this.config.screenshotInterval}s)`);
           } else {
             console.log('FFmpeg stdin not writable, stopping capture');
             break;
           }
 
-          // Wait for next frame (1000ms / fps)
-          await new Promise(resolve => setTimeout(resolve, 1000 / this.config.fps));
+          // Wait for the configured screenshot interval (much longer than before)
+          await new Promise(resolve => setTimeout(resolve, this.config.screenshotInterval * 1000));
+          
         } catch (error) {
           console.error('Screenshot error:', error);
           // Try to reload the page if screenshot fails
@@ -282,7 +298,8 @@ class WebToYouTubeStreamer {
         height: this.config.height,
         fps: this.config.fps,
         bitrate: this.config.bitrate,
-        headless: this.config.headless
+        headless: this.config.headless,
+        screenshotInterval: this.config.screenshotInterval
       }
     };
   }

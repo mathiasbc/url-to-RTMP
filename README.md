@@ -77,6 +77,7 @@ All configuration is managed through environment variables, making it easy to de
 | `STREAM_WIDTH`       | Stream width in pixels.                               | `1920`       |
 | `STREAM_HEIGHT`      | Stream height in pixels.                              | `1080`       |
 | `STREAM_FPS`         | Stream frames per second.                             | `30`         |
+| `SCREENSHOT_INTERVAL`| How often to capture screenshots (in seconds).        | `10`         |
 | `STREAM_BITRATE`     | Stream video bitrate (e.g., `7000k`).                 | `7000k`      |
 | `PORT`               | The port for the API server.                          | `3000`       |
 | `HEADLESS`           | Run browser in headless mode.                         | `true`       |
@@ -126,18 +127,36 @@ This script will run once when the VM is first created to set up the environment
 
 ```bash
 #!/bin/bash
-# URL-to-RTMP GCE Startup Script
+# URL-to-RTMP GCE Startup Script - UPDATED
+# This script is intended to be run as root by GCE. 'sudo' is included so commands
+# can also be run manually by a user with sudo privileges.
 
-# 1. Update system and install dependencies
-apt-get update
-apt-get install -y git docker.io docker-compose
+# 1. Uninstall old conflicting Docker packages
+for pkg in docker.io docker-doc docker-compose podman-docker containerd runc; do sudo apt-get remove -y $pkg; done
 
-# 2. Clone the application repository
+# 2. Set up Docker's official repository
+sudo apt-get update
+sudo apt-get install -y ca-certificates curl git
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+
+# Add the repository to Apt sources
+echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian \
+  $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+sudo apt-get update
+
+# 3. Install Docker Engine, CLI, and Compose plugin
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+
+# 4. Clone the application repository into /opt
 # IMPORTANT: Replace with your repository URL
-git clone https://github.com/liberator-app/url-to-RTMP.git /opt/url-to-rtmp
+sudo git clone https://github.com/mathiasbc/url-to-RTMP.git /opt/url-to-rtmp
 
-# 3. Create the systemd service file to manage the application
-cat <<EOF > /etc/systemd/system/url-to-rtmp.service
+# 5. Create the systemd service file to manage the application
+sudo tee /etc/systemd/system/url-to-rtmp.service > /dev/null <<EOF
 [Unit]
 Description=URL to RTMP Docker Compose Service
 Requires=docker.service
@@ -147,15 +166,16 @@ After=docker.service
 Restart=always
 RestartSec=10
 WorkingDirectory=/opt/url-to-rtmp
-ExecStart=/usr/bin/docker-compose up
-ExecStop=/usr/bin/docker-compose down
+# Use the Docker Compose V2 plugin (docker compose)
+ExecStart=/usr/bin/docker compose up
+ExecStop=/usr/bin/docker compose down
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-# 4. Enable the service so it starts on boot
-systemctl enable url-to-rtmp.service
+# 6. Enable the service so it starts on boot
+sudo systemctl enable url-to-rtmp.service
 
 # Note: The service will not successfully start until the user creates the .env file.
 ```
@@ -178,7 +198,30 @@ gcloud compute instances create url-to-rtmp-vm \
 -   Replace `YOUR_GCP_PROJECT_ID` with your project ID.
 -   This command creates a VM, attaches our startup script, and tags it for HTTP traffic.
 
-##### Step 3: Set Up Firewall Rule
+##### Step 3: Performance Tuning for Demanding Pages
+
+The default `e2-medium` machine type is cost-effective, but it may not be powerful enough for complex, frequently updating web pages (e.g., live charts, dashboards). If you experience low frame rates (check the logs) or your stream is buffering, you have three options:
+
+1.  **Upgrade the VM Instance (Recommended for high quality):**
+    For a smoother 1080p @ 30fps stream on demanding sites, use a more powerful machine. A `n1-standard-2` (2 vCPU, 7.5GB RAM) or even a `n1-standard-4` (4 vCPU, 15GB RAM) is a good choice. To use it, simply replace `--machine-type=e2-medium` with `--machine-type=n1-standard-2` in the `gcloud` command above. This will increase the monthly cost.
+
+2.  **Optimize for Slowly-Changing Content (Recommended for dashboards):**
+    If your target page updates infrequently (like the Bitcoin dashboard that updates every 60 seconds), you can dramatically reduce CPU usage by increasing the screenshot interval. Edit the `.env` file on your VM (`sudo nano /opt/url-to-rtmp/.env`) and add:
+    -   `SCREENSHOT_INTERVAL=30` (takes a screenshot every 30 seconds)
+    -   Or even `SCREENSHOT_INTERVAL=60` for very static content
+    
+    FFmpeg will automatically duplicate frames to maintain smooth 30fps video output while using much less CPU.
+
+3.  **Lower the Stream Quality (Most economical):**
+    If you want to keep costs down, you can reduce the CPU load by lowering the stream quality. You can do this by editing the `.env` file on your VM (`sudo nano /opt/url-to-rtmp/.env`) and changing these values:
+    -   `STREAM_WIDTH=1280`
+    -   `STREAM_HEIGHT=720`
+    -   `STREAM_FPS=20` (or even 15)
+    -   `STREAM_BITRATE=4000k`
+
+After editing the `.env` file, restart the service with `sudo systemctl restart url-to-rtmp`.
+
+##### Step 4: Set Up Firewall Rule
 
 Allow external traffic to reach the API server on port `3000`.
 ```bash
@@ -188,7 +231,7 @@ gcloud compute firewall-rules create allow-streamer-api \
     --target-tags=http-server
 ```
 
-##### Step 4: Configure and Start the Streamer
+##### Step 5: Configure and Start the Streamer
 
 1.  **SSH into your new VM:**
     ```bash
@@ -210,7 +253,7 @@ gcloud compute firewall-rules create allow-streamer-api \
     sudo systemctl start url-to-rtmp
     ```
 
-##### Step 5: Manage and Monitor the Service
+##### Step 6: Manage and Monitor the Service
 
 -   **Check Status:** See if the service is running correctly.
     ```bash
@@ -230,7 +273,10 @@ Your service is now deployed and will run 24/7, automatically restarting if the 
 ## Troubleshooting
 
 -   **"Bitrate is lower than recommended" warning:** Increase the `STREAM_BITRATE` to match your streaming provider's recommendation (e.g., `8000k` for YouTube 1080p).
--   **High CPU Usage:** The streaming process is CPU-intensive. If you experience performance issues, try lowering the `STREAM_WIDTH`/`STREAM_HEIGHT` to `1280`/`720` or reducing the `STREAM_FPS` to `24`.
+-   **High CPU Usage:** The streaming process is CPU-intensive. If you experience performance issues, try:
+    -   Increasing `SCREENSHOT_INTERVAL` to `30` or `60` seconds for slowly-changing content (like dashboards)
+    -   Lowering the `STREAM_WIDTH`/`STREAM_HEIGHT` to `1280`/`720`
+    -   Reducing the `STREAM_FPS` to `24`
 -   **FFmpeg errors:** Ensure your `YOUTUBE_RTMP_URL` and `YOUTUBE_STREAM_KEY` are correct. The logs will print FFmpeg's output for debugging.
 
 ---
