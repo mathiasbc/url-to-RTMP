@@ -98,12 +98,134 @@ All configuration is managed through environment variables, making it easy to de
 
 ## ☁️ Deployment
 
-This project is designed for easy deployment to any cloud provider that supports Docker containers. For detailed, step-by-step instructions for various platforms, please see the **[DEPLOYMENT.md](DEPLOYMENT.md)** file.
+This application is designed for flexible deployment. You can run it on modern Platform-as-a-Service (PaaS) providers or on your own Virtual Machine (VM) for more control and potentially lower cost for 24/7 operation.
 
--   **[Railway](DEPLOYMENT.md#railway)**
--   **[Render](DEPLOYMENT.md#render)**
--   **[Heroku](DEPLOYMENT.md#heroku)**
--   **[DigitalOcean, AWS, GCP](DEPLOYMENT.md#general-docker-deployment-digitalocean-aws-gcp)**
+### Option 1: Deploy to a Cloud Platform (PaaS)
+
+For the easiest, most managed deployment experience, we recommend using a cloud platform that directly supports Docker containers. This approach minimizes infrastructure management.
+
+➡️ **See our detailed [Cloud Deployment Guide](DEPLOYMENT.md) for instructions on:**
+-   **Railway**
+-   **Render**
+-   **Heroku**
+-   **Google Cloud Run, AWS App Runner**, and more.
+
+### Option 2: Deploy to a Personal Server or VM (IaaS)
+
+For 24/7 streaming, running the application on a dedicated Virtual Machine can be significantly more cost-effective. Below are the detailed steps for deploying to a **Google Compute Engine (GCE) VM**. This guide can be adapted for any Linux-based VM (e.g., from AWS, DigitalOcean, or a home server).
+
+#### Deploying to Google Compute Engine (GCE)
+
+**Estimated Cost:** A 24/7 `e2-medium` instance (2 vCPU, 4GB RAM) costs approximately **$25-30/month**.
+
+**Architecture:** We will create a GCE instance that runs a startup script to install Docker and clone this repository. A `systemd` service will be configured to automatically run the streamer via Docker Compose and ensure it restarts on boot or if it fails.
+
+##### Step 1: Create a Startup Script
+
+This script will run once when the VM is first created to set up the environment. Create a file named `gce-startup-script.sh` on your local machine.
+
+```bash
+#!/bin/bash
+# URL-to-RTMP GCE Startup Script
+
+# 1. Update system and install dependencies
+apt-get update
+apt-get install -y git docker.io docker-compose
+
+# 2. Clone the application repository
+# IMPORTANT: Replace with your repository URL
+git clone https://github.com/liberator-app/url-to-RTMP.git /opt/url-to-rtmp
+
+# 3. Create the systemd service file to manage the application
+cat <<EOF > /etc/systemd/system/url-to-rtmp.service
+[Unit]
+Description=URL to RTMP Docker Compose Service
+Requires=docker.service
+After=docker.service
+
+[Service]
+Restart=always
+RestartSec=10
+WorkingDirectory=/opt/url-to-rtmp
+ExecStart=/usr/bin/docker-compose up
+ExecStop=/usr/bin/docker-compose down
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# 4. Enable the service so it starts on boot
+systemctl enable url-to-rtmp.service
+
+# Note: The service will not successfully start until the user creates the .env file.
+```
+
+##### Step 2: Create and Configure the GCE VM
+
+Run the following `gcloud` command from your local terminal to create the VM instance.
+
+```bash
+gcloud compute instances create url-to-rtmp-vm \
+    --project=YOUR_GCP_PROJECT_ID \
+    --zone=us-central1-a \
+    --machine-type=e2-medium \
+    --image-family=debian-11 \
+    --image-project=debian-cloud \
+    --boot-disk-size=20GB \
+    --tags=http-server \
+    --metadata-from-file=startup-script=./gce-startup-script.sh
+```
+-   Replace `YOUR_GCP_PROJECT_ID` with your project ID.
+-   This command creates a VM, attaches our startup script, and tags it for HTTP traffic.
+
+##### Step 3: Set Up Firewall Rule
+
+Allow external traffic to reach the API server on port `3000`.
+```bash
+gcloud compute firewall-rules create allow-streamer-api \
+    --allow tcp:3000 \
+    --source-ranges=0.0.0.0/0 \
+    --target-tags=http-server
+```
+
+##### Step 4: Configure and Start the Streamer
+
+1.  **SSH into your new VM:**
+    ```bash
+    gcloud compute ssh url-to-rtmp-vm --zone=us-central1-a
+    ```
+
+2.  **Create your environment file:**
+    The repository was cloned to `/opt/url-to-rtmp`. Navigate there and create your `.env` file.
+    ```bash
+    cd /opt/url-to-rtmp
+    sudo cp env.example .env
+    sudo nano .env
+    ```
+    Fill in your `TARGET_URL`, `YOUTUBE_RTMP_URL`, `YOUTUBE_STREAM_KEY`, and `ACCESS_KEYWORD`. Save the file (`Ctrl+X`, `Y`, `Enter`).
+
+3.  **Start the service:**
+    The `systemd` service is already enabled but may have failed because the `.env` file was missing. Now you can start it manually.
+    ```bash
+    sudo systemctl start url-to-rtmp
+    ```
+
+##### Step 5: Manage and Monitor the Service
+
+-   **Check Status:** See if the service is running correctly.
+    ```bash
+    sudo systemctl status url-to-rtmp
+    ```
+-   **View Logs:** Watch the real-time output of your Docker container.
+    ```bash
+    sudo journalctl -fu url-to-rtmp.service
+    ```
+-   **Restarting:**
+    ```bash
+    sudo systemctl restart url-to-rtmp
+    ```
+
+Your service is now deployed and will run 24/7, automatically restarting if the VM reboots or the process crashes.
 
 ## Troubleshooting
 
