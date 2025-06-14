@@ -1,40 +1,35 @@
-# Use the official Playwright Docker image with all dependencies
+# Use the official Playwright image with Node.js
 FROM mcr.microsoft.com/playwright:v1.53.0-jammy
 
-# Install FFmpeg and additional dependencies
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Set working directory (switching back to root for setup)
-USER root
+# Set working directory
 WORKDIR /app
 
-# Copy package files first for better Docker layer caching
+# Copy package files
 COPY package*.json ./
 
-# Install Node.js dependencies
-RUN npm ci --only=production
+# Install Node.js dependencies (production only)
+RUN npm ci --omit=dev
 
 # Copy application code
 COPY . .
 
-# Change ownership to pwuser (the default Playwright user)
-RUN chown -R pwuser:pwuser /app
+# Create a non-root user for security
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+RUN chown -R appuser:appuser /app
+USER appuser
 
-# Switch to non-root user (pwuser from Playwright image)
-USER pwuser
-
-# Environment variables for headless operation
-ENV HEADLESS=true
-
-# Expose the application port
+# Expose the port
 EXPOSE 3000
 
-# Health check to ensure the service is running
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:3000/ || exit 1
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:3000/ || exit 1
 
 # Start the application
-CMD ["npm", "start"] 
+CMD ["node", "index.js"] 

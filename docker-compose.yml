@@ -1,16 +1,22 @@
-version: '3.8'
-
 services:
   youtube-streamer:
     build: .
     ports:
       - "3000:3000"
-    environment:
-      - NODE_ENV=production
-      - HEADLESS=true
     env_file:
       - .env
     restart: unless-stopped
+    environment:
+      - HEADLESS=true
+      - PORT=3000
+    volumes:
+      - /dev/shm:/dev/shm
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
     # For development, you can override with:
     # volumes:
     #   - ./:/app

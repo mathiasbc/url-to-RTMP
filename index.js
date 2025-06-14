@@ -1,5 +1,3 @@
-require('dotenv').config();
-
 const { chromium } = require('playwright');
 const { spawn } = require('child_process');
 const Koa = require('koa');
@@ -34,7 +32,7 @@ class WebToYouTubeStreamer {
       bitrate: process.env.STREAM_BITRATE || '8000k',
       port: parseInt(process.env.PORT) || 3000,
       headless: process.env.HEADLESS !== 'false',
-      screenshotInterval: parseFloat(process.env.SCREENSHOT_INTERVAL) || 1.0
+      screenshotInterval: parseFloat(process.env.SCREENSHOT_INTERVAL) || 10.0
     };
 
     if (!this.config.targetUrl) {
@@ -150,7 +148,9 @@ class WebToYouTubeStreamer {
     
     // Calculate input framerate based on screenshot interval
     const inputFramerate = (1 / this.config.screenshotInterval).toFixed(3);
+    const frameMultiplier = Math.ceil(this.config.fps / parseFloat(inputFramerate));
     console.log(`FFmpeg input framerate: ${inputFramerate} fps (1 frame every ${this.config.screenshotInterval}s)`);
+    console.log(`Frame duplication: Each input frame will be duplicated ${frameMultiplier}x to achieve ${this.config.fps} fps output`);
     
     // Enhanced bitrate calculation - ensure minimum for YouTube Live
     const baseBitrate = parseInt(this.config.bitrate);
@@ -172,9 +172,9 @@ class WebToYouTubeStreamer {
       '-f', 'lavfi',
       '-i', 'anullsrc=r=44100:cl=stereo',
       
-      // Video encoding optimized for YouTube Live streaming
+      // Video encoding optimized for YouTube Live streaming with low input framerate
       '-c:v', 'libx264',
-      '-preset', 'veryfast', // Changed from 'fast' for better real-time performance
+      '-preset', parseFloat(inputFramerate) < 5 ? 'fast' : 'veryfast', // Use 'fast' for low framerate for better quality
       '-tune', 'zerolatency',
       '-pix_fmt', 'yuv420p',
       '-profile:v', 'high',
@@ -185,14 +185,15 @@ class WebToYouTubeStreamer {
       '-g', (this.config.fps * 2).toString(), // GOP size
       '-keyint_min', this.config.fps.toString(),
       
-      // Enhanced bitrate control
+      // Enhanced bitrate control with CBR for consistent streaming
       '-b:v', `${targetBitrate}k`,
+      '-minrate', `${Math.floor(targetBitrate * 0.8)}k`, // Minimum bitrate for stability
       '-maxrate', `${maxBitrate}k`,
       '-bufsize', `${bufferSize}k`,
       '-crf', '23', // Add constant rate factor for quality
       
-      // Advanced video filters for smooth playback
-      '-vf', `fps=${this.config.fps},scale=${this.config.width}:${this.config.height}:flags=lanczos`,
+      // Advanced video filters optimized for low input framerate
+      '-vf', `fps=${this.config.fps}:round=up,scale=${this.config.width}:${this.config.height}:flags=lanczos,format=yuv420p`,
       
       // Advanced encoding optimizations for streaming
       '-x264-params', 'nal-hrd=cbr:force-cfr=1',
@@ -265,9 +266,6 @@ class WebToYouTubeStreamer {
       } else if (message.includes('Connection to') || message.includes('Stream mapping:')) {
         console.log('FFmpeg info:', message.trim());
       }
-      
-      // Clear the message reference immediately
-      message = null;
     });
 
     this.ffmpegProcess.on('close', (code) => {
