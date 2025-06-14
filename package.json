@@ -1,34 +1,41 @@
 {
-  "name": "youtube-web-streamer",
+  "name": "url-to-rtmp",
   "version": "1.0.0",
-  "description": "Cloud-deployable web page to YouTube Live streamer using Playwright and FFmpeg",
+  "description": "Stream any web page to YouTube Live, Twitch, or any RTMP service",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "dev": "node index.js",
-    "install-browsers": "npx playwright install chromium"
+    "start:gc": "node --expose-gc index.js",
+    "dev": "nodemon index.js",
+    "test": "node memory-test.js",
+    "test:memory": "node --expose-gc memory-test.js",
+    "test:screenshot": "node --expose-gc memory-test.js screenshot-leak",
+    "test:ffmpeg": "node --expose-gc memory-test.js ffmpeg-leak",
+    "test:browser": "node --expose-gc memory-test.js browser-leak",
+    "test:cycles": "node --expose-gc memory-test.js full-cycle",
+    "test:long": "node --expose-gc memory-test.js long-running"
   },
   "keywords": [
     "youtube",
     "streaming",
-    "playwright",
-    "web-automation",
-    "ffmpeg",
-    "live-stream",
     "rtmp",
-    "cloud",
-    "docker"
+    "web",
+    "capture",
+    "ffmpeg",
+    "playwright"
   ],
   "author": "Your Name",
   "license": "MIT",
   "dependencies": {
-    "dotenv": "^16.3.1",
-    "playwright": "^1.53.0",
     "koa": "^2.14.2",
     "koa-bodyparser": "^4.4.1",
-    "koa-json": "^2.0.2"
+    "koa-json": "^2.0.2",
+    "playwright": "^1.40.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=16.0.0"
   }
 }

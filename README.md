@@ -403,6 +403,56 @@ gcloud compute instances set-machine-type url-to-rtmp-vm \
 gcloud compute instances start url-to-rtmp-vm --zone=us-central1-a
 ```
 
+## 🧪 Memory Leak Testing
+
+The application includes a comprehensive memory leak test suite to help diagnose and prevent memory issues.
+
+### Running Memory Tests
+
+```bash
+# Run all memory tests
+npm run test:memory
+
+# Run specific tests
+npm run test:screenshot  # Test screenshot buffer leaks
+npm run test:ffmpeg     # Test FFmpeg process leaks  
+npm run test:browser    # Test browser context leaks
+npm run test:cycles     # Test start/stop cycles
+npm run test:long       # Long-running stability test
+
+# Run with garbage collection enabled (recommended)
+npm run start:gc        # Start app with GC support
+```
+
+### Memory Monitoring Features
+
+The application now includes built-in memory monitoring:
+
+- **Real-time tracking**: Memory usage logged every 5 minutes
+- **Leak detection**: Automatic warnings for excessive growth
+- **Periodic cleanup**: Browser context refresh every 100 screenshots
+- **Garbage collection**: Forced GC when available
+- **Performance metrics**: Screenshot count and timing statistics
+
+### Memory Optimization Features
+
+- **Screenshot buffer management**: Immediate buffer clearing after use
+- **FFmpeg stderr limiting**: Circular buffer prevents data accumulation  
+- **Browser context refresh**: Periodic page reloads to clear memory
+- **Event listener cleanup**: Proper removal of all event handlers
+- **Resource cleanup**: Comprehensive cleanup on stream stop
+
+### Interpreting Test Results
+
+```bash
+✅ Test passed - RSS growth < 50MB, Heap growth < 25MB
+🚨 Memory leak detected - Excessive memory growth found
+📊 Memory Stats - Current usage and growth patterns
+⚠️  Warning - High memory usage detected
+```
+
+Test reports are saved as JSON files for detailed analysis.
+
 ---
 
 *This project is not affiliated with YouTube or any other streaming platform.*

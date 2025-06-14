@@ -12,26 +12,42 @@ class WebToYouTubeStreamer {
     this.page = null;
     this.ffmpegProcess = null;
     this.isStreaming = false;
+    this.captureLoopActive = false;
+    this.memoryStats = {
+      startTime: Date.now(),
+      screenshotCount: 0,
+      lastMemoryCheck: Date.now(),
+      peakMemoryUsage: 0
+    };
+    
+    // Memory monitoring interval
+    this.memoryMonitorInterval = null;
     
     this.config = {
-      targetUrl: process.env.TARGET_URL || (() => { throw new Error('TARGET_URL environment variable is required') })(),
-      youtubeRtmpUrl: process.env.YOUTUBE_RTMP_URL || (() => { throw new Error('YOUTUBE_RTMP_URL environment variable is required') })(),
-      youtubeStreamKey: process.env.YOUTUBE_STREAM_KEY || (() => { throw new Error('YOUTUBE_STREAM_KEY environment variable is required') })(),
+      targetUrl: process.env.TARGET_URL,
+      youtubeRtmpUrl: process.env.YOUTUBE_RTMP_URL,
+      youtubeStreamKey: process.env.YOUTUBE_STREAM_KEY,
       accessKeyword: process.env.ACCESS_KEYWORD || '',
       width: parseInt(process.env.STREAM_WIDTH) || 1920,
       height: parseInt(process.env.STREAM_HEIGHT) || 1080,
       fps: parseInt(process.env.STREAM_FPS) || 30,
-      bitrate: process.env.STREAM_BITRATE || '7000k',
-      port: process.env.PORT || 3000,
-      headless: process.env.HEADLESS !== 'false', // Allow override for debugging
-      // New optimization: Screenshot interval in seconds (supports decimal values like 0.5)
+      bitrate: process.env.STREAM_BITRATE || '8000k',
+      port: parseInt(process.env.PORT) || 3000,
+      headless: process.env.HEADLESS !== 'false',
       screenshotInterval: parseFloat(process.env.SCREENSHOT_INTERVAL) || 1.0
     };
 
-    console.log('Web Streamer initialized with config:', {
+    if (!this.config.targetUrl) {
+      throw new Error('TARGET_URL environment variable is required');
+    }
+    if (!this.config.youtubeRtmpUrl) {
+      throw new Error('YOUTUBE_RTMP_URL environment variable is required');
+    }
+
+    console.log('WebToYouTubeStreamer initialized with config:', {
       ...this.config,
-      youtubeStreamKey: '[HIDDEN]',
-      accessKeyword: this.config.accessKeyword ? '[HIDDEN]' : '[NOT SET]'
+      youtubeStreamKey: this.config.youtubeStreamKey ? '[HIDDEN]' : 'NOT_SET',
+      accessKeyword: this.config.accessKeyword ? '[HIDDEN]' : 'NOT_SET'
     });
   }
 
@@ -209,35 +225,63 @@ class WebToYouTubeStreamer {
 
     this.ffmpegProcess = spawn('ffmpeg', ffmpegArgs);
 
+    // Memory-efficient stderr handling with circular buffer
+    let stderrBuffer = '';
+    const maxBufferSize = 10000; // Limit buffer size to prevent memory growth
+    let lastStatusLog = Date.now();
+    const statusLogInterval = 2000; // Log status every 2 seconds max
+
     this.ffmpegProcess.stdin.on('error', (err) => {
       console.error('FFmpeg stdin error:', err);
     });
 
     this.ffmpegProcess.stderr.on('data', (data) => {
       const message = data.toString();
+      
+      // Prevent stderr buffer from growing indefinitely
+      stderrBuffer += message;
+      if (stderrBuffer.length > maxBufferSize) {
+        stderrBuffer = stderrBuffer.slice(-maxBufferSize / 2); // Keep only recent half
+      }
+      
+      // Process messages without storing them long-term
       if (message.includes('error') || message.includes('Error')) {
-        console.error('FFmpeg error:', message);
+        console.error('FFmpeg error:', message.trim());
       } else if (message.includes('fps=')) {
-        // Log detailed streaming status
-        const fps = message.match(/fps=\s*(\d+)/);
-        const bitrate = message.match(/bitrate=\s*([0-9.]+[kmg]?bits\/s)/i);
-        const time = message.match(/time=\s*([0-9:.]+)/);
-        const speed = message.match(/speed=\s*([0-9.]+x)/);
-        if (fps || bitrate || time) {
-          console.log(`Stream status - FPS: ${fps?.[1] || 'N/A'}, Bitrate: ${bitrate?.[1] || 'N/A'}, Time: ${time?.[1] || 'N/A'}, Speed: ${speed?.[1] || 'N/A'}`);
+        // Throttle status logging to prevent spam
+        const now = Date.now();
+        if (now - lastStatusLog > statusLogInterval) {
+          const fps = message.match(/fps=\s*(\d+)/);
+          const bitrate = message.match(/bitrate=\s*([0-9.]+[kmg]?bits\/s)/i);
+          const time = message.match(/time=\s*([0-9:.]+)/);
+          const speed = message.match(/speed=\s*([0-9.]+x)/);
+          if (fps || bitrate || time) {
+            console.log(`Stream status - FPS: ${fps?.[1] || 'N/A'}, Bitrate: ${bitrate?.[1] || 'N/A'}, Time: ${time?.[1] || 'N/A'}, Speed: ${speed?.[1] || 'N/A'}`);
+          }
+          lastStatusLog = now;
         }
       } else if (message.includes('rtmp://')) {
-        // Log RTMP connection status
         console.log('RTMP status:', message.trim());
       } else if (message.includes('Connection to') || message.includes('Stream mapping:')) {
-        // Log important connection and stream info
         console.log('FFmpeg info:', message.trim());
       }
+      
+      // Clear the message reference immediately
+      message = null;
     });
 
     this.ffmpegProcess.on('close', (code) => {
       console.log(`FFmpeg process exited with code ${code}`);
       this.isStreaming = false;
+      this.captureLoopActive = false;
+      // Clear stderr buffer on close
+      stderrBuffer = null;
+    });
+
+    this.ffmpegProcess.on('error', (error) => {
+      console.error('FFmpeg process error:', error);
+      this.isStreaming = false;
+      this.captureLoopActive = false;
     });
 
     console.log('FFmpeg started successfully with enhanced streaming parameters');
@@ -263,11 +307,13 @@ class WebToYouTubeStreamer {
       
       // Pre-warm the screenshot engine
       console.log('Pre-warming screenshot engine...');
-      await this.page.screenshot({
+      const warmupScreenshot = await this.page.screenshot({
         type: 'png',
         fullPage: false,
         clip: { x: 0, y: 0, width: 100, height: 100 } // Small test screenshot
       });
+      // Immediately clear the warmup screenshot from memory
+      warmupScreenshot.fill(0);
       
     } catch (error) {
       console.error('Failed to load page:', error);
@@ -276,63 +322,95 @@ class WebToYouTubeStreamer {
 
     console.log(`Page ready, starting optimized web capture (screenshot every ${this.config.screenshotInterval}s)...`);
     this.isStreaming = true;
+    this.captureLoopActive = true;
 
-    // High-performance capture loop with optimizations
+    // Start memory monitoring
+    this.startMemoryMonitoring();
+
+    // High-performance capture loop with memory management
     const captureLoop = async () => {
       let screenshotCount = 0;
       let consecutiveErrors = 0;
       const maxConsecutiveErrors = 5;
+      let waitTimeoutId = null;
       
-      while (this.isStreaming && this.ffmpegProcess && !this.ffmpegProcess.killed) {
+      // Periodic browser context refresh to prevent memory buildup
+      const contextRefreshInterval = 100; // Refresh every 100 screenshots
+      
+      while (this.captureLoopActive && this.isStreaming && this.ffmpegProcess && !this.ffmpegProcess.killed) {
         try {
           const startTime = Date.now();
           
+          // Periodic browser page refresh to clear accumulated memory
+          if (screenshotCount > 0 && screenshotCount % contextRefreshInterval === 0) {
+            console.log(`🔄 Refreshing browser context after ${screenshotCount} screenshots to prevent memory buildup...`);
+            try {
+              await this.page.reload({ 
+                waitUntil: 'domcontentloaded',
+                timeout: 10000 
+              });
+              await this.page.waitForTimeout(1000);
+              console.log('✅ Browser context refreshed successfully');
+            } catch (refreshError) {
+              console.error('⚠️  Browser refresh failed:', refreshError.message);
+            }
+          }
+          
           // Optimized screenshot with minimal options for speed
-          const screenshot = await this.page.screenshot({
+          let screenshot = await this.page.screenshot({
             type: 'png',
             fullPage: false,
             omitBackground: false,
-            // Removed clip to capture full viewport
-            optimizeForSpeed: true // Playwright optimization flag
+            optimizeForSpeed: true
           });
 
-          if (this.ffmpegProcess.stdin.writable) {
-            this.ffmpegProcess.stdin.write(screenshot);
-            screenshotCount++;
-            consecutiveErrors = 0; // Reset error counter on success
+          if (this.ffmpegProcess && this.ffmpegProcess.stdin && this.ffmpegProcess.stdin.writable) {
+            // Write screenshot to FFmpeg
+            const writeSuccess = this.ffmpegProcess.stdin.write(screenshot);
             
-            const captureTime = Date.now() - startTime;
-            const nextInterval = this.config.screenshotInterval;
+            // Clear screenshot buffer immediately after writing
+            screenshot.fill(0);
+            screenshot = null;
             
-            // Log performance metrics
-            if (captureTime > 500) {
-              console.log(`⚠️  Screenshot ${screenshotCount} captured in ${captureTime}ms (SLOW - next in ${nextInterval}s)`);
+            if (writeSuccess) {
+              screenshotCount++;
+              this.memoryStats.screenshotCount = screenshotCount;
+              consecutiveErrors = 0; // Reset error counter on success
+              
+              const captureTime = Date.now() - startTime;
+              const nextInterval = this.config.screenshotInterval;
+              
+              // Log performance metrics with memory-efficient logging
+              if (screenshotCount % 10 === 0) { // Log every 10th screenshot to reduce spam
+                if (captureTime > 500) {
+                  console.log(`⚠️  Screenshot ${screenshotCount} captured in ${captureTime}ms (SLOW - next in ${nextInterval}s)`);
+                } else {
+                  console.log(`✅ Screenshot ${screenshotCount} captured in ${captureTime}ms (next in ${nextInterval}s)`);
+                }
+                
+                // Force garbage collection periodically if available
+                if (screenshotCount % 50 === 0 && global.gc) {
+                  global.gc();
+                }
+              }
             } else {
-              console.log(`✅ Screenshot ${screenshotCount} captured in ${captureTime}ms (next in ${nextInterval}s)`);
+              console.log('FFmpeg stdin backpressure, waiting...');
+              await new Promise(resolve => setTimeout(resolve, 100));
             }
-            
-            // Performance warning if consistently slow
-            if (screenshotCount % 10 === 0 && captureTime > 300) {
-              console.log(`📊 Performance check: Average capture time is high. Consider optimizing page content or increasing SCREENSHOT_INTERVAL.`);
-            }
-            
           } else {
             console.log('FFmpeg stdin not writable, stopping capture');
             break;
           }
 
-          // Efficient wait with early termination check
-          const waitStart = Date.now();
-          const waitTime = this.config.screenshotInterval * 1000;
-          
-          await new Promise((resolve) => {
-            const checkInterval = setInterval(() => {
-              if (!this.isStreaming || (Date.now() - waitStart >= waitTime)) {
-                clearInterval(checkInterval);
+          // Memory-efficient wait implementation
+          if (this.captureLoopActive && this.isStreaming) {
+            await new Promise((resolve) => {
+              waitTimeoutId = setTimeout(() => {
+                waitTimeoutId = null;
                 resolve();
-              }
-            }, 100); // Check every 100ms for early termination
-          });
+              }, this.config.screenshotInterval * 1000);
+            });
+          }
           
         } catch (error) {
           consecutiveErrors++;
@@ -360,10 +438,19 @@ class WebToYouTubeStreamer {
         }
       }
       
+      // Cleanup on loop exit
+      if (waitTimeoutId) {
+        clearTimeout(waitTimeoutId);
+      }
+      
       console.log('Capture loop ended');
+      this.captureLoopActive = false;
     };
 
-    captureLoop();
+    captureLoop().catch(error => {
+      console.error('Capture loop error:', error);
+      this.captureLoopActive = false;
+    });
   }
 
   async startStreaming() {
@@ -394,24 +481,91 @@ class WebToYouTubeStreamer {
   async stopStreaming() {
     console.log('Stopping stream...');
     this.isStreaming = false;
+    this.captureLoopActive = false;
 
+    // Stop memory monitoring
+    this.stopMemoryMonitoring();
+
+    // Clean up FFmpeg process
     if (this.ffmpegProcess) {
-      this.ffmpegProcess.stdin.end();
-      this.ffmpegProcess.kill('SIGTERM');
-      this.ffmpegProcess = null;
+      try {
+        // Gracefully close stdin first
+        if (this.ffmpegProcess.stdin && !this.ffmpegProcess.stdin.destroyed) {
+          this.ffmpegProcess.stdin.end();
+        }
+        
+        // Wait a moment for graceful shutdown
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        // Force kill if still running
+        if (!this.ffmpegProcess.killed) {
+          this.ffmpegProcess.kill('SIGTERM');
+          
+          // Wait for termination
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          
+          // Force kill if still running
+          if (!this.ffmpegProcess.killed) {
+            this.ffmpegProcess.kill('SIGKILL');
+          }
+        }
+        
+        // Remove all event listeners to prevent memory leaks
+        this.ffmpegProcess.removeAllListeners();
+        
+      } catch (error) {
+        console.error('Error stopping FFmpeg:', error);
+      } finally {
+        this.ffmpegProcess = null;
+      }
     }
 
+    // Clean up browser resources
     if (this.page) {
-      await this.page.close();
-      this.page = null;
+      try {
+        // Clear any pending timeouts/intervals on the page
+        await this.page.evaluate(() => {
+          // Clear all timeouts and intervals
+          const highestTimeoutId = setTimeout(() => {}, 0);
+          for (let i = 0; i < highestTimeoutId; i++) {
+            clearTimeout(i);
+            clearInterval(i);
+          }
+        });
+        
+        await this.page.close();
+      } catch (error) {
+        console.error('Error closing page:', error);
+      } finally {
+        this.page = null;
+      }
     }
 
     if (this.browser) {
-      await this.browser.close();
-      this.browser = null;
+      try {
+        await this.browser.close();
+      } catch (error) {
+        console.error('Error closing browser:', error);
+      } finally {
+        this.browser = null;
+      }
     }
 
-    console.log('Stream stopped');
+    // Force garbage collection if available
+    if (global.gc) {
+      global.gc();
+      console.log('🗑️  Forced garbage collection during cleanup');
+    }
+
+    // Reset memory stats
+    this.memoryStats = {
+      startTime: Date.now(),
+      screenshotCount: 0,
+      lastMemoryCheck: Date.now(),
+      peakMemoryUsage: 0
+    };
+
+    console.log('Stream stopped and resources cleaned up');
     return { success: true, message: 'Stream stopped' };
   }
 
@@ -438,6 +592,53 @@ class WebToYouTubeStreamer {
       throw new Error('Access keyword not configured');
     }
     return providedKeyword === this.config.accessKeyword;
+  }
+
+  // Memory monitoring methods
+  startMemoryMonitoring() {
+    if (this.memoryMonitorInterval) {
+      clearInterval(this.memoryMonitorInterval);
+    }
+    
+    this.memoryMonitorInterval = setInterval(() => {
+      const memUsage = process.memoryUsage();
+      const memUsageMB = {
+        rss: Math.round(memUsage.rss / 1024 / 1024),
+        heapUsed: Math.round(memUsage.heapUsed / 1024 / 1024),
+        heapTotal: Math.round(memUsage.heapTotal / 1024 / 1024),
+        external: Math.round(memUsage.external / 1024 / 1024)
+      };
+      
+      // Track peak memory usage
+      if (memUsageMB.rss > this.memoryStats.peakMemoryUsage) {
+        this.memoryStats.peakMemoryUsage = memUsageMB.rss;
+      }
+      
+      // Log memory stats every 5 minutes
+      const now = Date.now();
+      if (now - this.memoryStats.lastMemoryCheck > 300000) { // 5 minutes
+        console.log(`📊 Memory Stats - RSS: ${memUsageMB.rss}MB, Heap: ${memUsageMB.heapUsed}/${memUsageMB.heapTotal}MB, External: ${memUsageMB.external}MB, Peak: ${this.memoryStats.peakMemoryUsage}MB, Screenshots: ${this.memoryStats.screenshotCount}`);
+        this.memoryStats.lastMemoryCheck = now;
+        
+        // Force garbage collection if available
+        if (global.gc) {
+          global.gc();
+          console.log('🗑️  Forced garbage collection');
+        }
+        
+        // Warning if memory usage is growing rapidly
+        if (memUsageMB.rss > 1000) {
+          console.log('⚠️  High memory usage detected. Consider restarting the stream periodically.');
+        }
+      }
+    }, 30000); // Check every 30 seconds
+  }
+
+  stopMemoryMonitoring() {
+    if (this.memoryMonitorInterval) {
+      clearInterval(this.memoryMonitorInterval);
+      this.memoryMonitorInterval = null;
+    }
   }
 }
 
