@@ -77,8 +77,8 @@ All configuration is managed through environment variables, making it easy to de
 | `STREAM_WIDTH`       | Stream width in pixels.                               | `1920`       |
 | `STREAM_HEIGHT`      | Stream height in pixels.                              | `1080`       |
 | `STREAM_FPS`         | Stream frames per second.                             | `30`         |
-| `SCREENSHOT_INTERVAL`| How often to capture screenshots (in seconds).        | `10`         |
-| `STREAM_BITRATE`     | Stream video bitrate (e.g., `7000k`).                 | `7000k`      |
+| `SCREENSHOT_INTERVAL`| How often to capture screenshots (in seconds).        | `1.0`        |
+| `STREAM_BITRATE`     | Stream video bitrate (auto-enforces minimums).        | `8000k`      |
 | `PORT`               | The port for the API server.                          | `3000`       |
 | `HEADLESS`           | Run browser in headless mode.                         | `true`       |
 | `AUTO_START`         | Automatically start streaming on container launch.    | `false`      |
@@ -270,14 +270,138 @@ gcloud compute firewall-rules create allow-streamer-api \
 
 Your service is now deployed and will run 24/7, automatically restarting if the VM reboots or the process crashes.
 
-## Troubleshooting
+## 🔧 Performance Tuning & Troubleshooting
 
--   **"Bitrate is lower than recommended" warning:** Increase the `STREAM_BITRATE` to match your streaming provider's recommendation (e.g., `8000k` for YouTube 1080p).
--   **High CPU Usage:** The streaming process is CPU-intensive. If you experience performance issues, try:
-    -   Increasing `SCREENSHOT_INTERVAL` to `30` or `60` seconds for slowly-changing content (like dashboards)
-    -   Lowering the `STREAM_WIDTH`/`STREAM_HEIGHT` to `1280`/`720`
-    -   Reducing the `STREAM_FPS` to `24`
--   **FFmpeg errors:** Ensure your `YOUTUBE_RTMP_URL` and `YOUTUBE_STREAM_KEY` are correct. The logs will print FFmpeg's output for debugging.
+### Common Issues and Solutions
+
+#### 🚨 **YouTube "No recibe suficiente video" / Buffering Issues**
+**Symptoms:** YouTube shows buffering warnings, stream gets stuck loading
+**Solutions:**
+1. **Increase bitrate** (most common fix):
+   ```bash
+   STREAM_BITRATE=8000k  # For 1080p
+   STREAM_BITRATE=6000k  # For 720p minimum
+   ```
+
+2. **Optimize screenshot interval** for your content:
+   ```bash
+   # For dashboards that update every 60s
+   SCREENSHOT_INTERVAL=30
+   
+   # For dynamic content
+   SCREENSHOT_INTERVAL=1
+   
+   # For real-time content
+   SCREENSHOT_INTERVAL=0.5
+   ```
+
+3. **Check FFmpeg encoding speed** in logs:
+   - Look for `Speed: 1.0x` or higher
+   - If speed < 1.0x, reduce quality or increase interval
+
+#### ⚡ **Slow Screenshot Capture (>500ms)**
+**Symptoms:** Logs show "Screenshot captured in 700ms+" 
+**Solutions:**
+1. **Optimize browser performance:**
+   ```bash
+   # The app now automatically blocks unnecessary resources
+   # Check logs for "✅" vs "⚠️" screenshot indicators
+   ```
+
+2. **Increase screenshot interval:**
+   ```bash
+   SCREENSHOT_INTERVAL=2  # Reduce capture frequency
+   ```
+
+3. **Upgrade VM instance** (for cloud deployment):
+   ```bash
+   # Use n1-standard-2 or n1-standard-4 instead of e2-medium
+   ```
+
+#### 📊 **Low Stream FPS (showing 12 FPS instead of 30)**
+**Symptoms:** FFmpeg logs show `FPS: 12` instead of target FPS
+**Root Cause:** Screenshot capture is too slow for the interval
+**Solutions:**
+1. **Increase screenshot interval:**
+   ```bash
+   SCREENSHOT_INTERVAL=1.0  # Instead of 0.5
+   ```
+
+2. **Reduce stream quality temporarily:**
+   ```bash
+   STREAM_WIDTH=1280
+   STREAM_HEIGHT=720
+   STREAM_FPS=24
+   ```
+
+#### 🔧 **High CPU Usage**
+**Solutions by content type:**
+
+**Static Dashboards (Bitcoin prices, etc.):**
+```bash
+SCREENSHOT_INTERVAL=60    # 99.4% CPU reduction
+STREAM_BITRATE=6000k     # Adequate for slow-changing content
+```
+
+**Dynamic Content:**
+```bash
+SCREENSHOT_INTERVAL=2     # 93% CPU reduction
+STREAM_BITRATE=8000k     # Higher quality for changes
+```
+
+**Real-time Content:**
+```bash
+SCREENSHOT_INTERVAL=0.5   # 83% CPU reduction
+STREAM_BITRATE=10000k    # Maximum quality
+```
+
+### Performance Monitoring
+
+#### 📈 **Reading the Logs**
+```bash
+# Good performance indicators:
+✅ Screenshot 45 captured in 180ms (next in 1.0s)
+Stream status - FPS: 30, Bitrate: 8000.0kbits/s, Speed: 1.2x
+
+# Performance issues:
+⚠️  Screenshot 45 captured in 850ms (SLOW - next in 1.0s)  
+Stream status - FPS: 12, Bitrate: 1500.0kbits/s, Speed: 0.8x
+```
+
+#### 🎯 **Optimization Targets**
+- **Screenshot capture:** < 300ms (good), < 200ms (excellent)
+- **FFmpeg speed:** ≥ 1.0x (real-time), > 1.2x (excellent)
+- **Stream bitrate:** Match your `STREAM_BITRATE` setting
+- **Output FPS:** Should match your `STREAM_FPS` setting
+
+### Advanced Troubleshooting
+
+#### 🔍 **Debug Commands**
+```bash
+# Check container resources
+docker stats
+
+# View detailed logs
+sudo journalctl -fu url-to-rtmp.service
+
+# Test API endpoints
+curl -X GET http://localhost:3000/status
+```
+
+#### 🛠 **FFmpeg Errors**
+- **"Connection refused":** Check `YOUTUBE_RTMP_URL` and `YOUTUBE_STREAM_KEY`
+- **"Bitrate too low":** Increase `STREAM_BITRATE` 
+- **"Non-monotonous DTS":** Usually resolves automatically with new encoding settings
+
+#### 🚀 **Cloud Deployment Optimization**
+```bash
+# For Google Cloud Engine
+# Upgrade instance type:
+gcloud compute instances stop url-to-rtmp-vm --zone=us-central1-a
+gcloud compute instances set-machine-type url-to-rtmp-vm \
+    --machine-type=n1-standard-2 --zone=us-central1-a
+gcloud compute instances start url-to-rtmp-vm --zone=us-central1-a
+```
 
 ---
 

@@ -38,7 +38,7 @@ class WebToYouTubeStreamer {
   async initializeBrowser() {
     console.log('Initializing Playwright browser...');
     
-    // Launch Chromium with optimized settings for cloud deployment
+    // Launch Chromium with optimized settings for cloud deployment and fast screenshots
     this.browser = await chromium.launch({
       headless: this.config.headless,
       args: [
@@ -56,7 +56,28 @@ class WebToYouTubeStreamer {
         '--disable-features=TranslateUI',
         '--disable-ipc-flooding-protection',
         '--memory-pressure-off',
-        '--max_old_space_size=4096'
+        '--max_old_space_size=4096',
+        // Additional performance optimizations for faster screenshots
+        '--disable-extensions',
+        '--disable-plugins',
+        '--disable-images',
+        '--disable-javascript',
+        '--disable-web-security',
+        '--disable-features=VizDisplayCompositor',
+        '--run-all-compositor-stages-before-draw',
+        '--disable-background-networking',
+        '--disable-background-timer-throttling',
+        '--disable-client-side-phishing-detection',
+        '--disable-default-apps',
+        '--disable-hang-monitor',
+        '--disable-popup-blocking',
+        '--disable-prompt-on-repost',
+        '--disable-sync',
+        '--metrics-recording-only',
+        '--no-default-browser-check',
+        '--no-pings',
+        '--password-store=basic',
+        '--use-mock-keychain'
       ]
     });
 
@@ -68,14 +89,33 @@ class WebToYouTubeStreamer {
       height: this.config.height
     });
 
-    // Block unnecessary resources to improve performance
+    // Aggressive resource blocking for maximum performance
     await this.page.route('**/*', (route) => {
       const resourceType = route.request().resourceType();
-      if (['stylesheet', 'font', 'image', 'media'].includes(resourceType)) {
-        route.abort();
-      } else {
+      const url = route.request().url();
+      
+      // Block everything except the main document and essential scripts
+      if (resourceType === 'document' || 
+          (resourceType === 'script' && url.includes('liberator-bitcoin-dashboard'))) {
         route.continue();
+      } else {
+        route.abort();
       }
+    });
+
+    // Disable animations and transitions for faster rendering
+    await this.page.addInitScript(() => {
+      // Disable CSS animations and transitions
+      const style = document.createElement('style');
+      style.textContent = `
+        *, *::before, *::after {
+          animation-duration: 0s !important;
+          animation-delay: 0s !important;
+          transition-duration: 0s !important;
+          transition-delay: 0s !important;
+        }
+      `;
+      document.head.appendChild(style);
     });
 
     // Set additional page settings for better performance
@@ -96,44 +136,74 @@ class WebToYouTubeStreamer {
     const inputFramerate = (1 / this.config.screenshotInterval).toFixed(3);
     console.log(`FFmpeg input framerate: ${inputFramerate} fps (1 frame every ${this.config.screenshotInterval}s)`);
     
+    // Enhanced bitrate calculation - ensure minimum for YouTube Live
+    const baseBitrate = parseInt(this.config.bitrate);
+    const minBitrate = this.config.width >= 1920 ? 6000 : 4000; // 6Mbps for 1080p, 4Mbps for 720p
+    const targetBitrate = Math.max(baseBitrate, minBitrate);
+    const maxBitrate = Math.floor(targetBitrate * 1.2);
+    const bufferSize = targetBitrate * 2;
+    
+    console.log(`Bitrate optimization: target=${targetBitrate}k, max=${maxBitrate}k, buffer=${bufferSize}k`);
+    
     const ffmpegArgs = [
+      // Input settings optimized for PNG screenshots
       '-f', 'image2pipe',
       '-vcodec', 'png',
-      // Use dynamic input framerate based on screenshot interval
       '-r', inputFramerate,
       '-i', '-',
-      // Audio (required for YouTube Live) - Fixed syntax
+      
+      // Audio (required for YouTube Live)
       '-f', 'lavfi',
       '-i', 'anullsrc=r=44100:cl=stereo',
-      // Video encoding optimized for YouTube Live with frame duplication
-      '-vcodec', 'libx264',
-      '-preset', 'fast',
+      
+      // Video encoding optimized for YouTube Live streaming
+      '-c:v', 'libx264',
+      '-preset', 'veryfast', // Changed from 'fast' for better real-time performance
       '-tune', 'zerolatency',
       '-pix_fmt', 'yuv420p',
       '-profile:v', 'high',
-      '-level', '4.0',
-      // Output framerate - FFmpeg will duplicate frames to reach this
+      '-level', '4.2', // Increased from 4.0 for better quality
+      
+      // Frame rate and GOP settings
       '-r', this.config.fps.toString(),
-      '-g', (this.config.fps * 2).toString(),
+      '-g', (this.config.fps * 2).toString(), // GOP size
       '-keyint_min', this.config.fps.toString(),
-      '-b:v', this.config.bitrate,
-      '-maxrate', this.config.bitrate,
-      '-bufsize', (parseInt(this.config.bitrate) * 2) + 'k',
-      // Frame duplication filter to smooth out the low input framerate
-      '-vf', `fps=${this.config.fps}`,
-      // Additional encoding optimizations
+      
+      // Enhanced bitrate control
+      '-b:v', `${targetBitrate}k`,
+      '-maxrate', `${maxBitrate}k`,
+      '-bufsize', `${bufferSize}k`,
+      '-crf', '23', // Add constant rate factor for quality
+      
+      // Advanced video filters for smooth playback
+      '-vf', `fps=${this.config.fps},scale=${this.config.width}:${this.config.height}:flags=lanczos`,
+      
+      // Advanced encoding optimizations for streaming
+      '-x264-params', 'nal-hrd=cbr:force-cfr=1',
       '-sc_threshold', '0',
-      '-flags', '+cgop',
-      '-bf', '2',
-      // Audio encoding (enhanced)
+      '-flags', '+cgop+global_header',
+      '-bf', '0', // Disable B-frames for lower latency
+      '-refs', '3',
+      '-me_method', 'hex',
+      '-subq', '6',
+      '-trellis', '1',
+      
+      // Audio encoding (enhanced for better compatibility)
       '-c:a', 'aac',
       '-b:a', '160k',
       '-ar', '44100',
       '-ac', '2',
-      // Output format optimized for streaming
+      '-profile:a', 'aac_low',
+      
+      // Output format optimized for RTMP streaming
       '-f', 'flv',
       '-flvflags', 'no_duration_filesize',
+      
+      // Additional streaming optimizations
+      '-avoid_negative_ts', 'make_zero',
+      '-fflags', '+genpts',
       '-strict', 'experimental',
+      
       rtmpUrl
     ];
 
@@ -152,8 +222,9 @@ class WebToYouTubeStreamer {
         const fps = message.match(/fps=\s*(\d+)/);
         const bitrate = message.match(/bitrate=\s*([0-9.]+[kmg]?bits\/s)/i);
         const time = message.match(/time=\s*([0-9:.]+)/);
+        const speed = message.match(/speed=\s*([0-9.]+x)/);
         if (fps || bitrate || time) {
-          console.log(`Stream status - FPS: ${fps?.[1] || 'N/A'}, Bitrate: ${bitrate?.[1] || 'N/A'}, Time: ${time?.[1] || 'N/A'}`);
+          console.log(`Stream status - FPS: ${fps?.[1] || 'N/A'}, Bitrate: ${bitrate?.[1] || 'N/A'}, Time: ${time?.[1] || 'N/A'}, Speed: ${speed?.[1] || 'N/A'}`);
         }
       } else if (message.includes('rtmp://')) {
         // Log RTMP connection status
@@ -169,7 +240,7 @@ class WebToYouTubeStreamer {
       this.isStreaming = false;
     });
 
-    console.log('FFmpeg started successfully');
+    console.log('FFmpeg started successfully with enhanced streaming parameters');
   }
 
   async captureAndStream() {
@@ -180,14 +251,23 @@ class WebToYouTubeStreamer {
     console.log(`Loading page: ${this.config.targetUrl}`);
     
     try {
+      // Optimized page loading with shorter timeouts
       await this.page.goto(this.config.targetUrl, { 
-        waitUntil: 'networkidle',
-        timeout: 30000 
+        waitUntil: 'domcontentloaded', // Changed from 'networkidle' for faster loading
+        timeout: 15000 // Reduced from 30000ms
       });
       
-      // Wait additional time for dynamic content to load
+      // Minimal wait for essential content - reduced from 3000ms
       console.log('Page loaded, waiting for content to stabilize...');
-      await this.page.waitForTimeout(3000);
+      await this.page.waitForTimeout(1000);
+      
+      // Pre-warm the screenshot engine
+      console.log('Pre-warming screenshot engine...');
+      await this.page.screenshot({
+        type: 'png',
+        fullPage: false,
+        clip: { x: 0, y: 0, width: 100, height: 100 } // Small test screenshot
+      });
       
     } catch (error) {
       console.error('Failed to load page:', error);
@@ -197,45 +277,90 @@ class WebToYouTubeStreamer {
     console.log(`Page ready, starting optimized web capture (screenshot every ${this.config.screenshotInterval}s)...`);
     this.isStreaming = true;
 
-    // Optimized capture loop - takes screenshots much less frequently
+    // High-performance capture loop with optimizations
     const captureLoop = async () => {
       let screenshotCount = 0;
+      let consecutiveErrors = 0;
+      const maxConsecutiveErrors = 5;
       
       while (this.isStreaming && this.ffmpegProcess && !this.ffmpegProcess.killed) {
         try {
           const startTime = Date.now();
           
+          // Optimized screenshot with minimal options for speed
           const screenshot = await this.page.screenshot({
             type: 'png',
-            fullPage: false
+            fullPage: false,
+            omitBackground: false,
+            // Removed clip to capture full viewport
+            optimizeForSpeed: true // Playwright optimization flag
           });
 
           if (this.ffmpegProcess.stdin.writable) {
             this.ffmpegProcess.stdin.write(screenshot);
             screenshotCount++;
+            consecutiveErrors = 0; // Reset error counter on success
             
             const captureTime = Date.now() - startTime;
-            console.log(`Screenshot ${screenshotCount} captured in ${captureTime}ms (next in ${this.config.screenshotInterval}s)`);
+            const nextInterval = this.config.screenshotInterval;
+            
+            // Log performance metrics
+            if (captureTime > 500) {
+              console.log(`⚠️  Screenshot ${screenshotCount} captured in ${captureTime}ms (SLOW - next in ${nextInterval}s)`);
+            } else {
+              console.log(`✅ Screenshot ${screenshotCount} captured in ${captureTime}ms (next in ${nextInterval}s)`);
+            }
+            
+            // Performance warning if consistently slow
+            if (screenshotCount % 10 === 0 && captureTime > 300) {
+              console.log(`📊 Performance check: Average capture time is high. Consider optimizing page content or increasing SCREENSHOT_INTERVAL.`);
+            }
+            
           } else {
             console.log('FFmpeg stdin not writable, stopping capture');
             break;
           }
 
-          // Wait for the configured screenshot interval (much longer than before)
-          await new Promise(resolve => setTimeout(resolve, this.config.screenshotInterval * 1000));
+          // Efficient wait with early termination check
+          const waitStart = Date.now();
+          const waitTime = this.config.screenshotInterval * 1000;
+          
+          await new Promise((resolve) => {
+            const checkInterval = setInterval(() => {
+              if (!this.isStreaming || (Date.now() - waitStart >= waitTime)) {
+                clearInterval(checkInterval);
+                resolve();
+              }
+            }, 100); // Check every 100ms for early termination
+          });
           
         } catch (error) {
-          console.error('Screenshot error:', error);
-          // Try to reload the page if screenshot fails
-          try {
-            await this.page.reload({ waitUntil: 'networkidle' });
-            console.log('Page reloaded successfully');
-          } catch (reloadError) {
-            console.error('Page reload failed:', reloadError);
-            break;
+          consecutiveErrors++;
+          console.error(`Screenshot error (${consecutiveErrors}/${maxConsecutiveErrors}):`, error.message);
+          
+          if (consecutiveErrors >= maxConsecutiveErrors) {
+            console.error('Too many consecutive screenshot errors, attempting page reload...');
+            try {
+              await this.page.reload({ 
+                waitUntil: 'domcontentloaded',
+                timeout: 10000 
+              });
+              await this.page.waitForTimeout(1000);
+              console.log('Page reloaded successfully');
+              consecutiveErrors = 0;
+            } catch (reloadError) {
+              console.error('Page reload failed:', reloadError.message);
+              console.error('Stopping stream due to persistent errors');
+              break;
+            }
+          } else {
+            // Short wait before retry
+            await new Promise(resolve => setTimeout(resolve, 1000));
           }
         }
       }
+      
+      console.log('Capture loop ended');
     };
 
     captureLoop();
